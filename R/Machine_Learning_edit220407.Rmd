@@ -1,0 +1,838 @@
+---
+title: "220407_Machine_Learning"
+author: "Sasagawa_Shota"
+date: "4/7/2022"
+output: html_document
+---
+
+
+```{r}
+library(data.table)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(partykit)
+library(ROCR)
+library(ggparty)
+library(caret)
+library(randomForest)
+library(mice)
+```
+
+```{r}
+CLINICAL_DATA <- fread("Sample_001-143_inputdata/220407_Clinical_data_old_210823_ESCC_Summary_reference.csv")
+CIBERSORT_DATA <- fread("Sample_001-143_inputdata/220404_Immune_signature_cibersort_LM6_score_old_220329_210714_Heatmap_DF_summary.csv")
+TCELL_GENES_DATA <- fread("Sample_001-143_inputdata/220407_T-cellSignature_allsamples_FPKM4.csv")
+CNV_ARM_DATA <- fread("Sample_001-143_inputdata/220404_armlevel_Chromosome_CNVscore_old_210913_CNApp_Arm.csv")
+CNSIGNATURE <- fread("Sample_001-143_inputdata/220404_CNSignature_old_2021-07-23sig6_CNSignature_210913_add.csv")
+ANALYSIS <- fread("Sample_001-143_inputdata/220407_analysis_list.csv")
+
+
+
+```
+
+```{r}
+
+head(CLINICAL_DATA)
+head(CIBERSORT_DATA)
+head(TCELL_GENES_DATA)
+head(CNV_ARM_DATA)
+head(CNSIGNATURE)
+head(ANALYSIS)
+
+
+```
+
+```{r}
+DF <- na.omit(ANALYSIS)
+SUMMARY <- DF$Name %>% as.data.frame()
+colnames(SUMMARY) <- "Name"
+
+
+SUMMARY <- left_join(SUMMARY,CLINICAL_DATA,by="Name")
+SUMMARY <- left_join(SUMMARY,CIBERSORT_DATA)
+SUMMARY <- left_join(SUMMARY,TCELL_GENES_DATA)
+SUMMARY <- left_join(SUMMARY,CNV_ARM_DATA)
+SUMMARY <- left_join(SUMMARY,CNSIGNATURE)
+
+str(SUMMARY)
+summary(SUMMARY)
+```
+
+```{r}
+colnames(SUMMARY) <- c("Name","Sample_ID","Age","Gender","Smoking_Index",
+                       "Drinking","Response","Response_correct","Responder_Non_responder",
+                       "Immune_class","B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                       "CD8A","ICOS","CXCL9","CXCL10","GZMK","IRF1","HLA_DOB","HLA_DMB","HLA_DMA","HLA_DOA",
+                       "CCL2","CCL3","CCL4",
+                       "chr1_p" , "chr1_q","chr2_p","chr2_q","chr3_p","chr3_q","chr4_p",
+                       "chr4_q","chr5_p","chr5_q","chr6_p","chr6_q","chr7_p","chr7_q","chr8_p",
+                       "chr8_q","chr9_p","chr9_q","chr10_p","chr10_q","chr11_p","chr11_q","chr12_p",
+                       "chr12_q","chr13_p","chr13_q","chr14_p","chr14_q","chr15_p","chr15_q","chr16_p",
+                       "chr16_q","chr17_p","chr17_q","chr18_p","chr18_q","chr19_p","chr19_q","chr20_p",
+                       "chr20_q","chr21_p","chr21_q","chr22_p","chr22_q",
+                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6"
+                       )
+```
+
+```{r}
+data <- SUMMARY %>% as.data.frame
+head(data) #項目名を確認
+
+#データ型を確認
+for (i in 1:ncol(data)) {
+  print(c(names(data[i]),class(data[,i])))
+}
+
+#欠損値の有無
+sum(is.na(data))
+
+```
+
+```{r}
+head(data)
+data$Name
+
+data.1 <- data %>%
+  na.omit() %>%
+  as.data.frame()
+
+data.2 <- data[!is.na(data$Responder_Non_responder), ]
+
+chemo_filter <- c("OK086")
+data.3 <- data %>%
+ filter(!(data$Name %in% chemo_filter))
+
+```
+
+
+
+```{r}
+set.seed(8)
+model.df.1 <- (data.1)
+model.df.2 <- model.df.1 %>%
+  select(-Name,-Sample_ID,-Responder_Non_responder,-Response_correct,-Response,-Immune_class,
+         -"chr13_p",-"chr14_p",-"chr15_p",-"chr21_p",-"chr22_p") %>%
+  as.data.frame()
+
+rownames(model.df.2) <- model.df.1$Name
+
+model.df.2$Responder <- as.factor(model.df.1$Responder_Non_responder)
+model.df.2$Gender <- as.factor(model.df.2$Gender)
+model.2<-randomForest(Responder~., data=model.df.2)
+print(model.2)
+varImpPlot(model.2)
+model.2$importance
+```
+
+```{r}
+set.seed(8)
+model.df.1 <- (data.2)
+model.df.2 <- model.df.1 %>%
+  select(-Name,-Sample_ID,-Responder_Non_responder,-Response_correct,-Response,-Immune_class,
+         -"chr13_p",-"chr14_p",-"chr15_p",-"chr21_p",-"chr22_p") %>%
+  as.data.frame()
+
+rownames(model.df.2) <- model.df.1$Name
+
+model.df.2$Responder <- as.factor(model.df.1$Responder_Non_responder)
+model.df.2$Gender <- as.factor(model.df.2$Gender)
+model.2<-randomForest(Responder~., data=model.df.2,na.action="na.omit")
+print(model.2)
+varImpPlot(model.2)
+model.2$importance
+```
+
+
+```{r}
+set.seed(8)
+#
+# 欠測値補完 ----
+#
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(data.2, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- data.2
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+model.df.3 <- sample.mean
+
+model.df.3 <- model.df.3 %>%
+  select("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+         "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+         "chr9_p","chr9_q","chr12_q",
+         "Age","Gender","Smoking_Index","Drinking"
+         ) %>%
+  as.data.frame()
+
+rownames(model.df.3) <- sample.mean$Name
+
+model.df.3$Responder <- as.factor(sample.mean$Responder_Non_responder)
+model.df.3$Gender <- as.factor(model.df.3$Gender)
+model.df.3$Drinking <- as.factor(model.df.3$Drinking)
+
+model.3<-randomForest(Responder~., data=model.df.3,na.action="na.omit")
+print(model.3)
+varImpPlot(model.3)
+model.2$importance
+
+```
+
+```{r}
+for (i in 1:20) {              # for (ループ変数 in ベクトルやリスト)
+  set.seed(i)    
+spam <- (sample.mean)
+spam <-  spam[!is.na(spam$Responder_Non_responder), ]
+spam <-  spam[!(spam$Responder_Non_responder==""), ]
+
+DF_RESPONDER <- spam %>% filter(Responder_Non_responder=="Responder") %>% as.data.frame()
+DF_NONRESPONDER <- spam %>% filter(Responder_Non_responder=="Non-responder") %>% as.data.frame()
+
+train_resNO <-sample(nrow(DF_RESPONDER),nrow(DF_RESPONDER)*0.7,replace=FALSE)
+train_nonresNO <-sample(nrow(DF_NONRESPONDER),nrow(DF_NONRESPONDER)*0.7,replace=FALSE)
+
+train_res_dat <- DF_RESPONDER[train_resNO,]
+vali_res_dat <- DF_RESPONDER[-train_resNO,]
+train_nonres_dat <- DF_NONRESPONDER[train_nonresNO,]
+vali_nonres_dat <- DF_NONRESPONDER[-train_nonresNO,]
+
+train_dat <- rbind(train_res_dat,train_nonres_dat)
+vali_dat <- rbind(vali_res_dat,vali_nonres_dat)
+
+
+
+
+fit.1 <- rpart(train_dat$Responder_Non_responder~., data=train_dat[,c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+         "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+         "chr9_p","chr9_q","chr12_q",
+         "Age","Gender","Smoking_Index","Drinking")],
+             control=rpart.control(minsplit=20,cp=0.000001), #cpの値は任意で定めた
+             method="class",parms=list(split="information"))
+
+#結果を確認
+rpart.plot(fit.1,type = 5,extra = 102)
+
+}
+```
+
+fit.1 <- rpart(train_dat$Responder_Non_responder~., data=train_dat[,c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+         "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+         "chr9_p","chr9_q","chr12_q",
+         "Age","Gender","Smoking_Index","Drinking")],
+             control=rpart.control(minsplit=20,cp=0.000001), #cpの値は任意で定めた
+             method="class",parms=list(split="information"))
+
+
+
+for (i in 1:30) {              # for (ループ変数 in ベクトルやリスト)
+  set.seed(i)    
+spam <- (sample.mean)
+spam <-  spam[!is.na(spam$Responder_Non_responder), ]
+spam <-  spam[!(spam$Responder_Non_responder==""), ]
+
+DF_RESPONDER <- spam %>% filter(Responder_Non_responder=="Responder") %>% as.data.frame()
+DF_NONRESPONDER <- spam %>% filter(Responder_Non_responder=="Non-responder") %>% as.data.frame()
+
+train_resNO <-sample(nrow(DF_RESPONDER),nrow(DF_RESPONDER)*0.7,replace=FALSE)
+train_nonresNO <-sample(nrow(DF_NONRESPONDER),nrow(DF_NONRESPONDER)*0.7,replace=FALSE)
+
+train_res_dat <- DF_RESPONDER[train_resNO,]
+vali_res_dat <- DF_RESPONDER[-train_resNO,]
+train_nonres_dat <- DF_NONRESPONDER[train_nonresNO,]
+vali_nonres_dat <- DF_NONRESPONDER[-train_nonresNO,]
+
+train_dat <- rbind(train_res_dat,train_nonres_dat)
+vali_dat <- rbind(vali_res_dat,vali_nonres_dat)
+
+
+
+
+fit.1 <- rpart(train_dat$Responder_Non_responder~., data=train_dat[,c(
+         "Neutrophils",
+         "CNSig6",
+         "chr9_p","chr9_q","chr12_q",
+         "Smoking_Index")],
+             control=rpart.control(minsplit=20,cp=0.000001), #cpの値は任意で定めた
+             method="class",parms=list(split="information"))
+
+#結果を確認
+rpart.plot(fit.1,type = 5,extra = 102)
+
+}
+
+```{r}
+for (i in 1:20) {              # for (ループ変数 in ベクトルやリスト)
+  set.seed(i)    
+  
+  
+  
+spam <- data.3
+spam <-  spam[!is.na(spam$Responder_Non_responder), ]
+spam <-  spam[!(spam$Responder_Non_responder==""), ]
+
+train_resNO <-sample(nrow(spam),nrow(spam)*0.7,replace=FALSE)
+
+train_dat <- spam[train_resNO,]
+vali_dat <- spam[-train_resNO,]
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(train_dat, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- train_dat
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+train_dat.1 <- sample.mean
+
+
+fit.1 <- rpart(train_dat.1$Responder_Non_responder~., data=train_dat[,c(
+         "CD8_T_cells","CD4_T_cells","Neutrophils",
+         "CNSig6",
+         "chr9_p","chr12_q",
+         "Smoking_Index")],
+             control=rpart.control(minsplit=10,cp=0.000001), #cpの値は任意で定めた
+             method="class",parms=list(split="information"))
+
+#結果を確認
+rpart.plot(fit.1,type = 5,extra = 102)
+
+}
+
+
+
+
+```
+
+```{r}
+  set.seed(9)    
+  
+  
+  
+spam <- data.3
+spam <-  spam[!is.na(spam$Responder_Non_responder), ]
+spam <-  spam[!(spam$Responder_Non_responder==""), ]
+
+train_resNO <-sample(nrow(spam),nrow(spam)*0.7,replace=FALSE)
+
+train_dat <- spam[train_resNO,]
+vali_dat <- spam[-train_resNO,]
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(train_dat, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- train_dat
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+train_dat.1 <- sample.mean
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(vali_dat, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- vali_dat
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+vali_dat.1 <- sample.mean
+
+
+
+
+
+
+
+fit.1 <- rpart(train_dat.1$Responder_Non_responder~., data=train_dat[,c(
+         "CD8_T_cells","CD4_T_cells","Neutrophils",
+         "CNSig6",
+         "chr9_p","chr12_q",
+         "Smoking_Index")],
+             control=rpart.control(minsplit=10,cp=0.000001), #cpの値は任意で定めた
+             method="class",parms=list(split="information"))
+
+#結果を確認
+rpart.plot(fit.1,type = 5,extra = 102)
+
+predicted.p <- predict(fit.1,newdata=vali_dat.1,type="prob")
+
+predObj <- prediction(predicted.p[,2],vali_dat.1$Responder_Non_responder)
+rocObj <- performance(predObj,measure="tpr",x.measure="fpr")
+aucObj <- performance(predObj,measure="auc")
+
+auc <- aucObj@y.values[[1]]
+auc
+
+
+```
+
+```{r}
+plot(rocObj,main ="ROC curve", col="red")
+par(new=T)
+y <- function(x) x
+plot(y,0,1,xlab="",ylab="")
+legend("bottomright",legend=c("Decision Tree"),col=c("red"),lty=c(1))
+```
+
+
+
+
+
+
+
+```{r}
+summary(fit.1)
+fit.1$variable.importance
+printcp(fit.1)
+
+```
+
+```{r}
+train_dat.1$node <-  fit.1$where
+x <- predict( fit.1, train_dat.1)
+x.2 <- cbind(train_dat.1,x)
+predict(fit.1, vali_dat.1)
+```
+
+```{r}
+set.seed(16) 
+train_dat_edit <- train_dat.1 %>%
+  select("CD8_T_cells","CD4_T_cells","Neutrophils",
+         "CNSig6",
+         "chr9_p","chr12_q",
+         "Smoking_Index","Responder_Non_responder") %>%
+  as.data.frame
+
+train_dat_edit$Responder_Non_responder <- as.factor(train_dat_edit$Responder_Non_responder)
+
+spam.rf<-randomForest(Responder_Non_responder~., data=train_dat_edit,na.action="na.omit")
+print(spam.rf)
+spam.rf$err.rate
+varImpPlot(spam.rf)
+```
+
+
+```{r}
+V_CLINICAL_DATA <- fread("Sample_validation/220407_Clinical_data_02_old_210823_ESCC_Summary_reference.csv")
+V_CIBERSORT_DATA <- fread("Sample_validation/220404_Immune_signature_cibersort_LM6_score_old_220329_210714_Heatmap_DF_summary.csv")
+V_TCELL_GENES_DATA <- fread("Sample_validation/220407_T-cellSignature_allsamples_FPKM4.csv")
+V_CNV_ARM_DATA <- fread("Sample_validation/220404_armlevel_Chromosome_CNVscore_old_210913_CNApp_Arm.csv")
+V_CNSIGNATURE <- fread("Sample_validation/220404_CNSignature_old_2021-07-23sig6_CNSignature_210913_add.csv")
+
+```
+
+```{r}
+
+head(V_CLINICAL_DATA)
+head(V_CIBERSORT_DATA)
+head(V_TCELL_GENES_DATA)
+head(V_CNV_ARM_DATA)
+head(V_CNSIGNATURE)
+
+
+```
+
+```{r}
+V_SUMMARY <- left_join(V_CLINICAL_DATA,V_CIBERSORT_DATA,by="Name")
+V_SUMMARY <- left_join(V_SUMMARY,V_TCELL_GENES_DATA)
+V_SUMMARY <- left_join(V_SUMMARY,V_CNV_ARM_DATA)
+V_SUMMARY <- left_join(V_SUMMARY,V_CNSIGNATURE)
+
+str(V_SUMMARY)
+summary(V_SUMMARY)
+```
+
+```{r}
+colnames(V_SUMMARY) <- c("Name","Sample_ID","Age","Gender","Smoking_Index",
+                       "Drinking","Response","Response_correct","Responder_Non_responder",
+                       "Immune_class","B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                       "CD8A","ICOS","CXCL9","CXCL10","GZMK","IRF1","HLA_DOB","HLA_DMB","HLA_DMA","HLA_DOA",
+                       "CCL2","CCL3","CCL4",
+                       "chr1_p" , "chr1_q","chr2_p","chr2_q","chr3_p","chr3_q","chr4_p",
+                       "chr4_q","chr5_p","chr5_q","chr6_p","chr6_q","chr7_p","chr7_q","chr8_p",
+                       "chr8_q","chr9_p","chr9_q","chr10_p","chr10_q","chr11_p","chr11_q","chr12_p",
+                       "chr12_q","chr13_p","chr13_q","chr14_p","chr14_q","chr15_p","chr15_q","chr16_p",
+                       "chr16_q","chr17_p","chr17_q","chr18_p","chr18_q","chr19_p","chr19_q","chr20_p",
+                       "chr20_q","chr21_p","chr21_q","chr22_p","chr22_q",
+                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6"
+                       )
+```
+
+```{r}
+
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(V_SUMMARY, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- V_SUMMARY
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+V_SUMMARY.1 <- sample.mean
+
+V_SUMMARY.2 <-na.omit(V_SUMMARY.1)
+```
+
+```{r}
+
+rpart.plot(fit.1,type = 5,extra = 102)
+
+chemo_filter <- c("OK144","OK148","OK151","OK160")
+V_SUMMARY.3 <- V_SUMMARY.1 %>%
+ filter(!(V_SUMMARY.1$Name %in% chemo_filter))
+
+
+predicted.p <- predict(fit.1,newdata=V_SUMMARY.3,type="prob")
+
+predObj <- prediction(predicted.p[,2],V_SUMMARY.3$Responder_Non_responder)
+rocObj <- performance(predObj,measure="tpr",x.measure="fpr")
+aucObj <- performance(predObj,measure="auc")
+
+auc <- aucObj@y.values[[1]]
+auc
+
+
+predicted.p
+```
+
+
+#```{r}
+test <- rbind(train_dat.1,V_SUMMARY)
+
+
+# 平均値代入法（mean imputation）
+imp <- mice(subset(test, select=c("B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q"
+                                       )), method="mean", m=1, maxit=1)
+
+imp
+
+#欠損値のある列に関して補完した行列の表示
+complete(imp)
+
+#元のデータを編集
+sample.mean <- test
+sample.mean$CNSig1 <- complete(imp)$CNSig1
+sample.mean$CNSig2 <- complete(imp)$CNSig2
+sample.mean$CNSig3 <- complete(imp)$CNSig3
+sample.mean$CNSig4 <- complete(imp)$CNSig4
+sample.mean$CNSig5 <- complete(imp)$CNSig5
+sample.mean$CNSig6 <- complete(imp)$CNSig6
+sample.mean$B_cells <- complete(imp)$B_cells
+sample.mean$CD8_T_cells <- complete(imp)$CD8_T_cells
+sample.mean$CD4_T_cells <- complete(imp)$CD4_T_cells
+sample.mean$NK_cells <- complete(imp)$NK_cells
+sample.mean$Monocytes <- complete(imp)$Monocytes
+sample.mean$Neutrophils <- complete(imp)$Neutrophils
+sample.mean$chr9_p <- complete(imp)$chr9_p
+sample.mean$chr9_q <- complete(imp)$chr9_q
+sample.mean$chr12_q <- complete(imp)$chr12_q
+
+test.1 <- sample.mean
+
+
+#```
+
+#```{r}
+
+
+rpart.plot(fit.1,type = 5,extra = 102)
+
+test2 <- test.1[75:94,]
+#test2 <- test.1[33:52,]
+
+
+#chemo_filter <- c("OK144","OK148","OK151","OK160")
+test3 <- test2# %>%
+# filter(!(test2$Name %in% chemo_filter))
+
+test3 <- test3 %>%
+  select(Name,"B_cells","CD8_T_cells","CD4_T_cells","NK_cells","Monocytes","Neutrophils",
+                                       "CNSig1","CNSig2","CNSig3","CNSig4","CNSig5","CNSig6",
+                                       "chr9_p","chr9_q","chr12_q","Responder_Non_responder","Smoking_Index") %>%
+  as.data.frame()
+
+
+predicted.p <- predict(fit.1,newdata=test3,type="prob")
+
+predObj <- prediction(predicted.p[,2],test3$Responder_Non_responder)
+rocObj <- performance(predObj,measure="tpr",x.measure="fpr")
+aucObj <- performance(predObj,measure="auc")
+
+auc <- aucObj@y.values[[1]]
+auc
+
+
+predicted.p
+#```
+
+
+
+
+
+
+
+```{r}
+
+            # for (ループ変数 in ベクトルやリスト)
+set.seed(11)    
+#model.rf <- randomForest(Species ~ ., data = df.train)
+model.rf<-randomForest(Responder_Non_responder~., data=train_dat_edit,na.action="na.omit")
+#model.rf<-randomForest(Responder_Non_responder~., data=train_dat.1,na.action="na.omit")
+prediction = predict(model.rf, V_SUMMARY.3)
+
+(result <- table(prediction, V_SUMMARY.3$Responder_Non_responder)) # ()で括って内容表示
+
+(accuracy_prediction = sum(diag(result)) / sum(result))
+
+rf_p_train <- predict(model.rf, type="prob",newdata = V_SUMMARY.1)[,2]
+rf_pr_train <- prediction(rf_p_train, V_SUMMARY.1$Responder_Non_responder)
+r_auc_train1 <- performance(rf_pr_train, measure = "auc")@y.values[[1]] 
+r_auc_train1   
+
+
+#the second way to calculate training auc
+rf_p_train <- as.vector(model.rf$votes[,2])
+rf_pr_train <- prediction(rf_p_train,train_dat_edit$Responder_Non_responder);
+r_auc_train2 <- performance(rf_pr_train, measure = "auc")@y.values[[1]]
+r_auc_train2  
+
+
+predObj.1 <- prediction(rf_p_train,V_SUMMARY.1$Responder_Non_responder)
+rocObj.1<- performance(predObj.1,measure="tpr",x.measure="fpr")
+plot(rocObj.1,main ="ROC curve", col="red")
+par(new=T)
+y <- function(x) x
+plot(y,0,1,xlab="",ylab="")
+legend("bottomright",legend=c("Decision Tree"),col=c("red"),lty=c(1))
+
+
+```
+
+```{r}
+#calculate performance
+library(pROC)
+#mroc<-roc(y.true, prediction[,1], plot=T)
+
+predictions <- as.data.frame(predict(model.rf, V_SUMMARY.1, type = "prob"))
+predictions$predict <- names(predictions)[1:2][apply(predictions[,1:2], 1, which.max)]
+#predictions$observed <- test$condition
+#head(predictions)
+
+
+
+```
+
+```{r}
+# prediction      Non-responder Responder
+#  Non-responder             1         1
+#  Responder                 2        13
+  
+#https://www.qservegroup.com/eu/en/i776/why-ppv-and-npv-should-be-considered-when-setting-sensitivity-and-specificity-requirements
+
+TP = 1
+FN = 1
+FP = 2
+TN = 13
+N = 17
+Accuracy = 100*(TP+TN)/N
+Sensitivity = 100*TP/(TP+FN)
+Specificity = 100*TN/(FP+TN)
+Disease_prevalence = 100*(TP+FN)/N
+PPV = 100*TP/(TP+FP)
+NPV = 100*TN/(FN+TN)
+
+TP
+FN
+FP
+TN
+N
+Accuracy
+Sensitivity
+Specificity
+Disease_prevalence
+PPV
+NPV
+  
+  
+```
+
+```{r}
+
+set.seed(8)    
+#model.rf <- randomForest(Species ~ ., data = df.train)
+model.rf<-randomForest(Responder_Non_responder~., data=train_dat_edit,na.action="na.omit")
+#model.rf<-randomForest(Responder_Non_responder~., data=train_dat.1,na.action="na.omit")
+prediction = predict(model.rf, vali_dat.1)
+
+(result <- table(prediction, vali_dat.1$Responder_Non_responder)) # ()で括って内容表示
+
+(accuracy_prediction = sum(diag(result)) / sum(result))
+
+rf_p_train <- predict(model.rf, type="prob",newdata = vali_dat.1)[,2]
+rf_pr_train <- prediction(rf_p_train, vali_dat.1$Responder_Non_responder)
+r_auc_train1 <- performance(rf_pr_train, measure = "auc")@y.values[[1]] 
+r_auc_train1   
+
+#predicted.p <- predict(fit.1,newdata=vali_dat.1,type="prob")
+predObj.1 <- prediction(rf_p_train,vali_dat.1$Responder_Non_responder)
+rocObj.1<- performance(predObj.1,measure="tpr",x.measure="fpr")
+plot(rocObj.1,main ="ROC curve", col="red")
+par(new=T)
+y <- function(x) x
+plot(y,0,1,xlab="",ylab="")
+legend("bottomright",legend=c("Decision Tree"),col=c("red"),lty=c(1))
+
+
+
+```
+
+```{r}
+#prediction      Non-responder Responder
+#  Non-responder             6         3
+#  Responder                 2        21
+
+TP = 6
+FN = 3
+FP = 2
+TN = 21
+N = TP+FN+FP+TN
+Accuracy = 100*(TP+TN)/N
+Sensitivity = 100*TP/(TP+FN)
+Specificity = 100*TN/(FP+TN)
+Disease_prevalence = 100*(TP+FN)/N
+PPV = 100*TP/(TP+FP)
+NPV = 100*TN/(FN+TN)
+
+TP
+FN
+FP
+TN
+N
+Accuracy
+Sensitivity
+Specificity
+Disease_prevalence
+PPV
+NPV
+
+
+```
+
+
+
+
+
+
+
